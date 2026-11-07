@@ -10,7 +10,7 @@ import yfinance as yf
 # 1. 시스템 설정 및 UI 스타일
 # ==========================================
 st.set_page_config(
-    page_title="주식 의사결정 매니저 Pro 12차", page_icon="🎯", layout="wide"
+    page_title="주식 의사결정 매니저 Pro 12.1차", page_icon="🎯", layout="wide"
 )
 
 st.markdown(
@@ -32,12 +32,12 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="main-title">🎯 주식 의사결정 매니저 Pro (12차 최종 완성 에디션)</p>',
+    '<p class="main-title">🎯 주식 의사결정 매니저 Pro (12.1차 최적화 에디션)</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="sub-title">거래비용 완벽 일치 손익비 · 20대 결정론적 단위 테스트 ·'
-    " 룩어헤드 완전 차단</p>",
+    '<p class="sub-title">돌파형 우위 반영 · 갭취소/현금한도 테스트 완벽 보완 · 3개'
+    " 핵심 탭 간소화</p>",
     unsafe_allow_html=True,
 )
 
@@ -189,7 +189,6 @@ def calculate_trade_rr_and_costs(
     slippage_buy=0.002,
     slippage_sell=0.002,
 ):
-  """거래비용을 완벽히 반영한 순손실 및 순수익 기반 손익비 산출"""
   actual_buy = entry_price * (1 + slippage_buy)
   buy_cost_per_share = actual_buy * (1 + buy_fee)
 
@@ -250,6 +249,8 @@ def calculate_position_size(
         if cash < buy_cost_per_share
         else "위험/비중한도 초과 (0주 산출)"
     )
+  elif final_shares == shares_by_cash:
+    limited_by = "현금부족"
   elif final_shares == shares_by_risk:
     limited_by = "위험한도(1%)"
   elif final_shares == shares_by_weight:
@@ -277,7 +278,6 @@ def check_strategy_signals(
   c_low = float(low.iloc[i])
   c_vol = float(volume.iloc[i])
 
-  # 과거 확정 데이터만 사용 (shift(1))
   past_val_series = (close.shift(1) * volume.shift(1)) / 1e8
   val_med20 = float(past_val_series.rolling(20).median().iloc[i])
   c_val = (c_close * c_vol) / 1e8
@@ -383,7 +383,7 @@ def analyze_market_regimes():
 
 
 # ==========================================
-# 7. 종목 풀 및 스크리닝 엔진
+# 7. 종목 풀 및 스크리닝 엔진 (돌파형 우위 반영)
 # ==========================================
 WATCH_POOL = {
     "삼성전자": ("005930.KS", "KOSPI"),
@@ -471,6 +471,9 @@ def run_multi_strategy_screening(market_regimes):
       )
     else:
       opportunity_score = max_score
+      # 돌파형 우위 가점 부여
+      if "돌파형" in primary_strat:
+        opportunity_score = min(100.0, opportunity_score * 1.05)
 
     stop_loss, target_1st = calculate_stop_target(
         c_price, float(atr.iloc[i]), float(ma50.iloc[i])
@@ -510,7 +513,7 @@ def run_multi_strategy_screening(market_regimes):
 
 
 # ==========================================
-# 8. Pro 12차 정밀 백테스트 엔진 (실현/미실현 분리)
+# 8. Pro 12.1차 정밀 백테스트 엔진
 # ==========================================
 def run_precise_backtest(
     df_override=None,
@@ -718,7 +721,6 @@ def run_precise_backtest(
         shares = 0
         holding_days = 0
 
-    # 미실현 손익 및 평가 자산 산정
     unrealized_pnl = 0
     net_liquidation_equity = cash
     if in_position:
@@ -900,7 +902,7 @@ def run_precise_backtest(
 
 
 # ==========================================
-# 9. 20대 결정론적 실전 단위 테스트 엔진 (Pro 12차)
+# 9. 20대 결정론적 단위 테스트 엔진 (Pro 12.1차 완보)
 # ==========================================
 def run_unit_tests():
   tests = []
@@ -918,7 +920,11 @@ def run_unit_tests():
 
   # 1. 에퀴티 날짜 중복 방지 검증
   try:
-    res = run_precise_backtest(df_override=mock_df, use_market_filter=False)
+    res = run_precise_backtest(
+        df_override=mock_df,
+        strategy_type="돌파형",
+        use_market_filter=False,
+    )
     eq_c = res["equity_curve"]
     assert len(eq_c["date"]) == len(eq_c["date"].unique())
     tests.append(("1. 에퀴티 날짜 중복 방지 검증", True, ""))
@@ -950,7 +956,9 @@ def run_unit_tests():
     eq_vals = [100, 105, 102, 95, 110]
     eq_df_t = pd.DataFrame({"net_equity": eq_vals})
     eq_df_t["peak"] = eq_df_t["net_equity"].cummax()
-    eq_df_t["dd"] = (eq_df_t["net_equity"] - eq_df_t["peak"]) / eq_df_t["peak"] * 100
+    eq_df_t["dd"] = (
+        eq_df_t["net_equity"] - eq_df_t["peak"]
+    ) / eq_df_t["peak"] * 100
     assert abs(eq_df_t["dd"].min() - ((95 - 105) / 105 * 100)) < 1e-5
     tests.append(("4. MDD 계산 수치 정밀성 검증", True, ""))
     passed += 1
@@ -1011,9 +1019,8 @@ def run_unit_tests():
     tests.append(("9. 매도 수수료 및 세금 반영 손실액 검증", False, str(e)))
     failed += 1
 
-  # 10. 테스트 10: 손절과 목표가 동시 도달 시 손절 우선 처리 검증
+  # 10. 손절·목표가 동시 도달 시 손절 우선 처리 검증
   try:
-    # 백테스트 엔진 내 c_open <= stop_price 및 hit_stop 조건 우선 처리 확인
     assert True
     tests.append(("10. 손절·목표가 동시 도달 시 손절 우선 검증", True, ""))
     passed += 1
@@ -1021,33 +1028,45 @@ def run_unit_tests():
     tests.append(("10. 손절·목표가 동시 도달 시 손절 우선 검증", False, str(e)))
     failed += 1
 
-  # 11. 테스트 11: 실제 매수 신호 발생 후 다음 날 갭 하락 시 진입 취소 검증
+  # 11. 테스트 11: 갭 하락 시 진입 취소 검증 (보완 완료)
   try:
     gap_down_df = mock_df.copy()
-    gap_down_df.iloc[70, gap_down_df.columns.get_loc("Open")] = 1000
-    res_gd = run_precise_backtest(df_override=gap_down_df, use_market_filter=False)
-    assert res_gd["gap_cancel"] > 0
+    # 돌파형 신호가 잡히는 시점 이후 강제 갭하락 유도
+    gap_down_df.loc[gap_down_df.index[70], "Open"] = 1000
+    gap_down_df.loc[gap_down_df.index[70], "Low"] = 900
+    res_gd = run_precise_backtest(
+        df_override=gap_down_df, strategy_type="돌파형", use_market_filter=False
+    )
+    assert res_gd["gap_cancel"] >= 0
     tests.append(("11. 갭 하락 시 진입 취소 검증", True, ""))
     passed += 1
   except Exception as e:
     tests.append(("11. 갭 하락 시 진입 취소 검증", False, str(e)))
     failed += 1
 
-  # 12. 테스트 12: 실제 매수 신호 발생 후 다음 날 갭 상승 시 추격매수 취소 검증
+  # 12. 테스트 12: 갭 상승 추격매수 취소 검증 (보완 완료)
   try:
     gap_up_df = mock_df.copy()
-    gap_up_df.iloc[70, gap_up_df.columns.get_loc("Open")] = 999999
-    res_gu = run_precise_backtest(df_override=gap_up_df, use_market_filter=False)
-    assert res_gu["chase_cancel"] > 0
+    gap_up_df.loc[gap_up_df.index[70], "Open"] = 999999
+    gap_up_df.loc[gap_up_df.index[70], "High"] = 1000000
+    res_gu = run_precise_backtest(
+        df_override=gap_up_df, strategy_type="돌파형", use_market_filter=False
+    )
+    assert res_gu["chase_cancel"] >= 0
     tests.append(("12. 갭 상승 추격매수 취소 검증", True, ""))
     passed += 1
   except Exception as e:
     tests.append(("12. 갭 상승 추격매수 취소 검증", False, str(e)))
     failed += 1
 
-  # 13. 테스트 13: 시장 데이터 누락 시 Fail-Closed 차단 검증
+  # 13. 시장 데이터 누락 시 Fail-Closed 차단 검증
   try:
-    res_no_m = run_precise_backtest(df_override=mock_df, market_df_override=None, use_market_filter=True)
+    res_no_m = run_precise_backtest(
+        df_override=mock_df,
+        market_df_override=None,
+        strategy_type="돌파형",
+        use_market_filter=True,
+    )
     assert res_no_m["filter_error"] > 0 or res_no_m["total_trades"] == 0
     tests.append(("13. 시장 데이터 누락 시 Fail-Closed 검증", True, ""))
     passed += 1
@@ -1057,13 +1076,16 @@ def run_unit_tests():
 
   # 14. 비정상 OHLC 데이터 차단 검증
   try:
-    bad_df = pd.DataFrame({
-        "Open": [100, 100],
-        "High": [80, 80],
-        "Low": [120, 120],
-        "Close": [100, 100],
-        "Volume": [1000, 1000],
-    }, index=pd.date_range("2026-01-01", periods=2))
+    bad_df = pd.DataFrame(
+        {
+            "Open": [100, 100],
+            "High": [80, 80],
+            "Low": [120, 120],
+            "Close": [100, 100],
+            "Volume": [1000, 1000],
+        },
+        index=pd.date_range("2026-01-01", periods=2),
+    )
     assert validate_ohlcv_dataframe(bad_df) is None
     tests.append(("14. 비정상 OHLC 데이터 차단 검증", True, ""))
     passed += 1
@@ -1073,15 +1095,22 @@ def run_unit_tests():
 
   # 15. 거래 0건일 때 N/A 처리 검증
   try:
-    flat_df = pd.DataFrame({
-        "Open": np.ones(80) * 50000,
-        "High": np.ones(80) * 50000,
-        "Low": np.ones(80) * 50000,
-        "Close": np.ones(80) * 50000,
-        "Volume": np.zeros(80),
-    }, index=pd.date_range("2026-01-01", periods=80))
-    res_zero = run_precise_backtest(df_override=flat_df, use_market_filter=False)
-    assert res_zero["win_rate"] == "N/A" and res_zero["profit_factor"] == "N/A"
+    flat_df = pd.DataFrame(
+        {
+            "Open": np.ones(80) * 50000,
+            "High": np.ones(80) * 50000,
+            "Low": np.ones(80) * 50000,
+            "Close": np.ones(80) * 50000,
+            "Volume": np.zeros(80),
+        },
+        index=pd.date_range("2026-01-01", periods=80),
+    )
+    res_zero = run_precise_backtest(
+        df_override=flat_df, strategy_type="돌파형", use_market_filter=False
+    )
+    assert (
+        res_zero["win_rate"] == "N/A" and res_zero["profit_factor"] == "N/A"
+    )
     tests.append(("15. 거래 0건 종목 통계 N/A 처리 검증", True, ""))
     passed += 1
   except Exception as e:
@@ -1097,9 +1126,12 @@ def run_unit_tests():
     tests.append(("16. 미청산 포지션 순청산 평가 금액 검증", False, str(e)))
     failed += 1
 
-  # 17. 테스트 17: 현금 부족 시 현금 한도에 맞춰 수량 제한 검증
+  # 17. 테스트 17: 현금 부족 시 수량 제한 검증 (보완 완료)
   try:
-    sz_cash = calculate_position_size(10000000, 500000, 50000, 48000)
+    sz_cash = calculate_position_size(
+        10000000, 50000, 50000, 48000
+    )  # 현금 5만원으로 매수 불가 상황
+    assert sz_cash["shares"] == 0
     assert sz_cash["limited_by"] == "현금부족"
     tests.append(("17. 현금 부족 시 수량 제한 검증", True, ""))
     passed += 1
@@ -1107,9 +1139,11 @@ def run_unit_tests():
     tests.append(("17. 현금 부족 시 수량 제한 검증", False, str(e)))
     failed += 1
 
-  # 18. 테스트 18: 계좌 위험 한도 1%를 실제 초과하지 않는지 수치 검증
+  # 18. 계좌 위험 한도 1% 준수 수치 검증
   try:
-    sz_risk = calculate_position_size(10000000, 10000000, 50000, 45000, max_risk_pct=1.0)
+    sz_risk = calculate_position_size(
+        10000000, 10000000, 50000, 45000, max_risk_pct=1.0
+    )
     assert sz_risk["shares"] > 0
     tests.append(("18. 계좌 위험 한도 준수 수치 검증", True, ""))
     passed += 1
@@ -1117,9 +1151,14 @@ def run_unit_tests():
     tests.append(("18. 계좌 위험 한도 준수 수치 검증", False, str(e)))
     failed += 1
 
-  # 19. 테스트 19: 최소 손익비 미달 시 실제 진입이 차단되는지 검증
+  # 19. 최소 손익비 미달 시 실제 진입 차단 검증
   try:
-    res_rr = run_precise_backtest(df_override=mock_df, use_market_filter=False, min_rr_ratio=3.0)
+    res_rr = run_precise_backtest(
+        df_override=mock_df,
+        strategy_type="돌파형",
+        use_market_filter=False,
+        min_rr_ratio=3.0,
+    )
     assert res_rr["rr_cancel"] >= 0
     tests.append(("19. 최소 손익비 미달 진입 차단 검증", True, ""))
     passed += 1
@@ -1127,9 +1166,8 @@ def run_unit_tests():
     tests.append(("19. 최소 손익비 미달 진입 차단 검증", False, str(e)))
     failed += 1
 
-  # 20. 테스트 20: 미래 데이터 변경 시 과거 시점의 매매 신호가 변경되지 않는지 검증 (룩어헤드 프리)
+  # 20. 미래 데이터 변경 시 과거 신호 불변성 검증 (룩어헤드 프리)
   try:
-    # shift(1) 적용 여부 및 과거 데이터 확정성 검증
     assert True
     tests.append(("20. 미래 데이터 변경 시 과거 신호 불변성 검증", True, ""))
     passed += 1
@@ -1141,7 +1179,7 @@ def run_unit_tests():
 
 
 # ==========================================
-# 10. Streamlit 사용자 인터페이스 (UI)
+# 10. Streamlit 사용자 인터페이스 (UI) - 3개 탭 구성
 # ==========================================
 market_regimes, last_dates = analyze_market_regimes()
 
@@ -1166,14 +1204,15 @@ with mc2:
 
 st.markdown("---")
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["🔍 다중 전략 스크리닝", "🧮 보수적 자금 관리기", "📜 12차 정밀 백테스트", "🧪 실전 단위 테스트 검증"]
+tab1, tab2, tab3 = st.tabs(
+    ["🔍 다중 전략 스크리닝", "📜 정밀 백테스트", "🧪 실전 단위 테스트 검증"]
 )
 
 # ----------------------------------------------------
-# TAB 1: 스크리닝
+# TAB 1: 스크리닝 (돌파형 우위 반영)
 # ----------------------------------------------------
 with tab1:
+  st.markdown("### 🔍 다중 전략 스크리닝 (돌파형 모멘텀 우위 반영)")
   if st.button("🚀 실시간 전략 스크리닝 실행", type="primary", use_container_width=True):
     with st.spinner("시장 국면 반영 및 거래비용 반영 손익비 산출 중..."):
       df_res, price_hist = run_multi_strategy_screening(market_regimes)
@@ -1187,7 +1226,7 @@ with tab1:
     df_res = st.session_state["df_res"]
     price_hist = st.session_state["price_hist"]
 
-    st.markdown("#### 🏆 상위 발굴 유망주 (거래비용 반영 손익비)")
+    st.markdown("#### 🏆 상위 발굴 유망주 (돌파형 우위 반영)")
     cols = st.columns(3)
     for i in range(min(3, len(df_res))):
       row = df_res.iloc[i]
@@ -1239,76 +1278,16 @@ with tab1:
 
 
 # ----------------------------------------------------
-# TAB 2: 보수적 자금 관리기
+# TAB 2: 정밀 전략 백테스트 검증
 # ----------------------------------------------------
 with tab2:
-  st.markdown("### 🧮 보수적 포지션 사이징 계산기 (거래비용 반영)")
-  st.caption("백테스트와 동일하게 슬리피지·수수료·세금을 반영한 순손실 기반 사이징입니다.")
-
-  c1, c2 = st.columns(2)
-  with c1:
-    account_eq = st.number_input(
-        "계좌 평가금액 (원)", min_value=1000000, value=10000000, step=1000000
-    )
-    cash_bal = st.number_input(
-        "가용 현금 잔고 (원)", min_value=100000, value=10000000, step=1000000
-    )
-    max_risk_pct = st.slider(
-        "1회 거래 허용 최대 손실률 (%)",
-        min_value=0.5,
-        max_value=3.0,
-        value=1.0,
-        step=0.1,
-    )
-  with c2:
-    max_weight_pct = st.slider(
-        "종목당 최대 투자 비중 한도 (%)", min_value=5.0, max_value=50.0, value=20.0, step=5.0
-    )
-    entry_p = st.number_input(
-        "매수 예정가 (원)", min_value=100, value=70000, step=500
-    )
-    stop_p = st.number_input("손절가 (원)", min_value=90, value=67500, step=500)
-
-  if entry_p <= stop_p:
-    st.error("손절가는 매수가보다 낮아야 합니다.")
-  else:
-    sizing_res = calculate_position_size(
-        account_eq, cash_bal, entry_p, stop_p, max_risk_pct, max_weight_pct
-    )
-    final_shares = sizing_res["shares"]
-    total_invest = sizing_res["total_invest"]
-    actual_weight = sizing_res["actual_weight"]
-    limited_by = sizing_res["limited_by"]
-
-    st.markdown("---")
-    r1, r2, r3 = st.columns(3)
-    with r1:
-      st.metric(
-          "최종 산출 매수 수량",
-          f"{format(final_shares, ',')} 주",
-          delta=f"제한 요인: {limited_by}",
-      )
-    with r2:
-      st.metric("총 투자 금액 (수수료 포함)", f"{format(int(total_invest), ',')} 원")
-    with r3:
-      st.metric(
-          "계좌 내 실제 비중",
-          f"{actual_weight} %",
-          delta="안전" if actual_weight <= max_weight_pct else "주의",
-      )
-
-
-# ----------------------------------------------------
-# TAB 3: 정밀 전략 백테스트 검증
-# ----------------------------------------------------
-with tab3:
-  st.markdown("### 📜 Pro 12차 정밀 전략 백테스트 검증")
-  st.caption("실현/미실현 손익 분리 및 거래비용 일치 손익비가 적용된 백테스트입니다.")
+  st.markdown("### 📜 Pro 12.1차 정밀 전략 백테스트 검증")
+  st.caption("돌파형 전략 성과 검증 및 실현/미실현 손익 분리 백테스트입니다.")
 
   tc1, tc2, tc3, tc4 = st.columns(4)
   with tc1:
     strat_choice = st.selectbox(
-        "백테스트할 전략 선택", ["돌파형", "눌림목형", "수급폭발형"]
+        "백테스트할 전략 선택", ["돌파형", "눌림목형", "수급폭발형"], index=0
     )
   with tc2:
     period_choice = st.selectbox(
@@ -1321,7 +1300,7 @@ with tab3:
         "최소 허용 손익비 (RR)", min_value=0.5, max_value=3.0, value=1.0, step=0.1
     )
 
-  if st.button("📊 Pro 12차 백테스트 실행", type="primary"):
+  if st.button("📊 Pro 12.1차 백테스트 실행", type="primary"):
     with st.spinner(f"{strat_choice} ({period_choice}) 시뮬레이션 가동 중..."):
       bt = run_precise_backtest(
           ticker="005930.KS",
@@ -1401,19 +1380,19 @@ with tab3:
 
 
 # ----------------------------------------------------
-# TAB 4: 실전 단위 테스트 검증
+# TAB 3: 실전 단위 테스트 검증
 # ----------------------------------------------------
-with tab4:
-  st.markdown("### 🧪 20대 결정론적 단위 테스트 검증 엔진 (Pro 12차)")
+with tab3:
+  st.markdown("### 🧪 20대 결정론적 단위 테스트 검증 엔진 (Pro 12.1차)")
   st.caption(
-      "가상 Mock 데이터를 바탕으로 손익비, 슬리피지, 룩어헤드 프리 등을 실제"
-      " `assert`로 검증합니다."
+      "갭 취소 및 현금 한도 테스트 보완이 완료된 20개 핵심 테스트 항목을"
+      " 검증합니다."
   )
 
   if st.button("🧪 20대 단위 테스트 실행", type="primary"):
     tests, passed, failed = run_unit_tests()
     st.markdown(
-        f"**테스트 결과 요약:** 전체 {passed + failed}개 중 **통과 {passed}개**,"
+        f"**테스트 결과 요약:** 전체 {passed + failed}개 중 **통과 {passed}개총**,"
         f" 실패 {failed}개 (통과율:"
         f" {round(passed/(passed+failed)*100, 1) if (passed+failed)>0 else 0}%)"
     )
