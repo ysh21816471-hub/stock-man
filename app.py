@@ -10,7 +10,6 @@ st.set_page_config(
     page_title="나만의 주식 매니저", page_icon="📈", layout="wide"
 )
 
-# 모바일/PC 반응형 커스텀 스타일
 st.markdown(
     """
     <style>
@@ -39,17 +38,32 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="main-title">🚀 나만의 주식 의사결정 매니저</p>',
+    '<p class="main-title">🚀 나만의 주식 의사결정 매니저 (고도화 에디션)</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="sub-title">실시간 수급·모멘텀 데이터를 종합 분석하여 상승 여력이'
-    " 높은 주도주를 발굴합니다.</p>",
+    '<p class="sub-title">수급, 추세(MA50), 과열지표(RSI), 매크로 리스크 및'
+    " 리스크-리워드를 종합 분석합니다.</p>",
     unsafe_allow_html=True,
 )
 
 
-# 2. 주도주 수집 및 분석 함수
+# 2. 시장 매크로(코스피 지수) 상태 체크 함수
+@st.cache_data(ttl=3600)
+def check_market_macro():
+  try:
+    df_market = yf.download("^KS11", period="2mo", progress=False)
+    if isinstance(df_market.columns, pd.MultiIndex):
+      df_market.columns = df_market.columns.get_level_values(0)
+    current_idx = float(df_market["Close"].iloc[-1])
+    ma20_idx = float(df_market["Close"].rolling(20).mean().iloc[-1])
+    is_bullish = current_idx >= ma20_idx
+    return is_bullish, current_idx
+  except:
+    return True, 0.0
+
+
+# 3. 주도주 수집 및 고도화 분석 함수
 @st.cache_data(ttl=3600)
 def analyze_stocks():
   WATCH_LIST = {
@@ -83,8 +97,9 @@ def analyze_stocks():
   results = []
   for name, ticker in WATCH_LIST.items():
     try:
-      df = yf.download(ticker, period="1mo", progress=False)
-      if df.empty or len(df) < 10:
+      # 지표 계산을 위해 3개월(약 70거래일) 데이터 확보
+      df = yf.download(ticker, period="3mo", progress=False)
+      if df.empty or len(df) < 50:
         continue
 
       if isinstance(df.columns, pd.MultiIndex):
@@ -94,11 +109,13 @@ def analyze_stocks():
       prev_price = float(df["Close"].iloc[-2])
       change_rate = ((current_price - prev_price) / prev_price) * 100
 
+      # 유동성 및 수급 폭증 배율
       recent_vol = float(df["Volume"].iloc[-1])
       recent_val = current_price * recent_vol / 100000000
       avg_val = (df["Close"] * df["Volume"] / 100000000).mean()
       vol_spike = (recent_val / avg_val) if avg_val > 0 else 1.0
 
+      # 5일 모멘텀 수익률
       ret_5d = (
           (
               (current_price - float(df["Close"].iloc[-5]))
@@ -109,6 +126,22 @@ def analyze_stocks():
           else 0.0
       )
 
+      # [고도화 1] 추세 정배열 검증 (50일 이평선 기준)
+      ma50 = float(df["Close"].rolling(window=50).mean().iloc[-1])
+      is_uptrend = current_price > ma50
+
+      # [고도화 2] RSI (14일) 과열 구간 계산
+      delta = df["Close"].diff()
+      gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+      loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+      rs = gain / loss
+      rsi_series = 100 - (100 / (1 + rs))
+      current_rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
+
+      # [고도화 4] 리스크-리워드 (추천 손절가 -2%, 목표 익절가 +5%)
+      stop_loss = round(current_price * 0.98)
+      take_profit = round(current_price * 1.05)
+
       results.append({
           "종목명": name,
           "티커": ticker,
@@ -117,6 +150,10 @@ def analyze_stocks():
           "당일 거래대금(억)": round(recent_val, 1),
           "거래대금 폭증배율": round(vol_spike, 2),
           "5일 수익률(%)": round(ret_5d, 2),
+          "추세정배열": "상승세 (O)" if is_uptrend else "조정/하락세 (X)",
+          "RSI지표": round(current_rsi, 1),
+          "추천손절가": stop_loss,
+          "추천목표가": take_profit,
       })
     except:
       continue
@@ -126,15 +163,34 @@ def analyze_stocks():
 
   res_df = pd.DataFrame(results)
 
-  # 점수 산출
-  res_df["유동성점수"] = res_df["당일 거래대금(억)"].rank(pct=True) * 40
-  res_df["수급폭증점수"] = res_df["거래대금 폭증배율"].rank(pct=True) * 30
-  res_df["모멘텀점수"] = res_df["5일 수익률(%)"].rank(pct=True) * 30
+  # [고도화 3] 점수 가중치 개편 (100점 만점 구조)
+  res_df["유동성점수"] = res_df["당일 거래대금(억)"].rank(pct=True) * 30
+  res_df["수급폭증점수"] = res_df["거래대금 폭증배율"].rank(pct=True) * 25
+  res_df["모멘텀점수"] = res_df["5일 수익률(%)"].rank(pct=True) * 20
+
+  # 추세 가점 (정배열이면 +15점)
+  res_df["추세점수"] = res_df["추세정배열"].apply(lambda x: 15 if "O" in x else 0)
+
+  # RSI 최적 구간 가점 (과열권인 80 이상이거나 침체권인 30 미만이면 감점, 50~70 사이면 만점 10점)
+  def calc_rsi_score(rsi):
+    if 50 <= rsi <= 70:
+      return 10
+    elif 30 <= rsi < 50 or 70 < rsi <= 80:
+      return 6
+    else:
+      return 2  # 과열(80초과) 또는 침체(30미만)
+
+  res_df["RSI점수"] = res_df["RSI지표"].apply(calc_rsi_score)
+
+  # 최종 종합 점수 산출
   res_df["종합점수"] = (
-      res_df["유동성점수"] + res_df["수급폭증점수"] + res_df["모멘텀점수"]
+      res_df["유동성점수"]
+      + res_df["수급폭증점수"]
+      + res_df["모멘텀점수"]
+      + res_df["추세점수"]
+      + res_df["RSI점수"]
   ).round(1)
 
-  # 내림차순 정렬 및 순위 추가
   res_df = res_df.sort_values(by="종합점수", ascending=False).reset_index(
       drop=True
   )
@@ -143,12 +199,26 @@ def analyze_stocks():
   return res_df
 
 
-# 3. 메인 화면 구성 및 실행
+# 4. 메인 UI 구성 및 매크로 경고 표시
+market_is_bullish, kospi_val = check_market_macro()
+
+if not market_is_bullish:
+  st.warning(
+      "⚠️ **[시장 매크로 경고]** 현재 코스피 지수가 20일 이동평균선 아래에"
+      " 위치해 있습니다. 시장 전체가 하락세이므로 매매 비중을 줄이고 리스크를"
+      " 관리하세요!"
+  )
+else:
+  st.success(
+      "✅ **[시장 매크로 양호]** 코스피 지수가 20일 이동평균선 위에 있어"
+      " 안정적인 매매 환경입니다."
+  )
+
 if st.button(
-    "📊 실시간 주도주 스크리닝 시작", type="primary", use_container_width=True
+    "📊 고도화 AI 주도주 스크리닝 시작", type="primary", use_container_width=True
 ):
   with st.spinner(
-      "시장 데이터를 수집하고 최적의 종목 순위를 매기는 중입니다..."
+      "수급, 50일 이평선 추세, RSI 과열도 및 리스토어 수준을 종합 계산 중입니다..."
   ):
     df_result = analyze_stocks()
 
@@ -157,11 +227,9 @@ if st.button(
           "데이터 분석 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요."
       )
     else:
-      st.success(
-          f"✨ 분석 완료! (총 {len(df_result)}개 종목 추천 순위 산정 완료)"
-      )
+      st.success(f"✨ 분석 완료! (총 {len(df_result)}개 우량 주도주 정밀 스코어링)")
 
-      # --- [개선 1] TOP 3 카드 + 선정 이유 모달(Expander) ---
+      # TOP 3 카드
       st.markdown("### 🏆 오늘의 TOP 3 유망 주도주")
       top3_cols = st.columns(3)
 
@@ -183,38 +251,29 @@ if st.button(
                 unsafe_allow_html=True,
             )
 
-            # 클릭 시 이유를 보여주는 접이식 버튼
-            with st.expander(f"💡 {row['종목명']} 선정 이유 보기"):
-              st.write(f"**1. 유동성 수급:** {row['당일 거래대금(억)']}억 유입")
+            with st.expander(f"💡 {row['종목명']} 고도화 선정 이유"):
               st.write(
-                  f"**2. 수급 폭증률:** 평소 20일 평균 대비"
-                  f" **{row['거래대금 폭증배율']}배** 폭증"
+                  f"**1. 유동성 및 수급:** 당일 거래대금"
+                  f" **{row['당일 거래대금(억)']}억** (폭증배율:"
+                  f" {row['거래대금 폭증배율']}배)"
               )
               st.write(
-                  f"**3. 단기 모멘텀:** 최근 5일간 **{row['5일 수익률(%)']}%**"
-                  " 추세 유지"
+                  f"**2. 추세 정배열:** {row['추세정배열']} (50일선 기준)"
               )
-
-              # 종합 평가 문구 자동 생성
-              if row["거래대금 폭증배율"] >= 1.5:
-                st.info(
-                    "🔥 **알고리즘 총평:** 평소보다 거래량이 급증하며 강한"
-                    " 자금이 유입된 전형적인 주도주 형태입니다."
-                )
-              elif row["5일 수익률(%)"] > 5:
-                st.info(
-                    "📈 **알고리즘 총평:** 5일 단기 추세가 우상향하며 탄탄한"
-                    " 상승 모멘텀을 형성하고 있습니다."
-                )
-              else:
-                st.info(
-                    "🛡️ **알고리즘 총평:** 거래대금 수급이 상위권에 속해 있어"
-                    " 하방을 지지하는 힘이 강합니다."
-                )
+              st.write(
+                  f"**3. 과열 지표(RSI):** {row['RSI지표']}점 (과열 구간 회피"
+                  " 여부 확인)"
+              )
+              st.markdown("---")
+              st.info(
+                  f"🛡️ **리스크 가이드:** 손절가 **{format(row['추천손절가'], ',')}원**"
+                  f" (-2%) / 목표가 **{format(row['추천목표가'], ',')}원**"
+                  " (+5%)"
+              )
 
       st.markdown("<br>", unsafe_allow_html=True)
 
-      # --- [개선 2] Plotly 기반의 고급 세련된 차트 UI ---
+      # Plotly 인터랙티브 차트
       st.markdown("### 📊 TOP 10 종목 종합 점수 비교")
       top10_df = df_result.head(10).sort_values(by="종합점수", ascending=True)
 
@@ -225,7 +284,7 @@ if st.button(
           orientation="h",
           text="종합점수",
           color="종합점수",
-          color_continuous_scale="Viridis",  # 세련된 그라데이션 색상
+          color_continuous_scale="Viridis",
       )
 
       fig.update_layout(
@@ -234,7 +293,7 @@ if st.button(
           font=dict(color="#ffffff"),
           xaxis=dict(showgrid=True, gridcolor="#334155", title="종합 점수"),
           yaxis=dict(title=""),
-          coloraxis_showscale=False,  # 범례 숨기기
+          coloraxis_showscale=False,
           height=380,
           margin=dict(l=20, r=20, t=20, b=20),
       )
@@ -246,16 +305,17 @@ if st.button(
 
       st.plotly_chart(fig, use_container_width=True)
 
-      # --- 전체 추천 순위 리스트 표 ---
-      st.markdown("### 📋 전체 추천 순위 리스트")
+      # 전체 추천 순위 리스트 표 (손절가/목표가 포함)
+      st.markdown("### 📋 전체 추천 순위 리스트 및 리스크 가이드")
       display_df = df_result[[
           "순위",
           "종목명",
           "현재가",
           "등락률(%)",
-          "당일 거래대금(억)",
-          "거래대금 폭증배율",
-          "5일 수익률(%)",
+          "추세정배열",
+          "RSI지표",
+          "추천손절가",
+          "추천목표가",
           "종합점수",
       ]].copy()
 
@@ -264,6 +324,6 @@ if st.button(
       )
 else:
   st.info(
-      "👆 상단의 **[실시간 주도주 스크리닝 시작]** 버튼을 누르면 AI 매니저가"
-      " 순위를 매겨 분석 결과를 보여줍니다."
+      "👆 상단의 **[고도화 AI 주도주 스크리닝 시작]** 버튼을 누르면 시장 매크로"
+      " 점검부터 종목 정밀 랭킹까지 분석이 시작됩니다."
   )
