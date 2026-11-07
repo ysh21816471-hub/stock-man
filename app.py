@@ -39,12 +39,12 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="main-title">🚀 나만의 주식 의사결정 매니저 (고도화 에디션)</p>',
+    '<p class="main-title">🚀 나만의 주식 의사결정 매니저 (ATR 변동성 에디션)</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="sub-title">수급, 추세(MA50), 과열지표(RSI), 매크로 리스크 및'
-    " 차트 흐름을 종합 분석합니다.</p>",
+    '<p class="sub-title">종목별 실제 변동성(ATR 14일)과 지지선(MA50)을'
+    " 바탕으로 정밀한 동적 손절·익절가를 산출합니다.</p>",
     unsafe_allow_html=True,
 )
 
@@ -63,7 +63,7 @@ def check_market_macro():
     return True, 0.0
 
 
-# 3. 데이터 분석 및 주가 차트 시계열 확보
+# 3. 정밀 변동성(ATR) 기반 데이터 수집 및 분석 함수
 @st.cache_data(ttl=3600)
 def analyze_stocks():
   WATCH_LIST = {
@@ -106,8 +106,7 @@ def analyze_stocks():
       if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-      # 주가 데이터 저장 (차트용)
-      raw_price_data[name] = df.tail(22)  # 최근 1개월 분량
+      raw_price_data[name] = df.tail(22)  # 최근 1개월 데이터
 
       current_price = float(df["Close"].iloc[-1])
       prev_price = float(df["Close"].iloc[-2])
@@ -128,9 +127,11 @@ def analyze_stocks():
           else 0.0
       )
 
+      # 50일 이동평균선
       ma50 = float(df["Close"].rolling(window=50).mean().iloc[-1])
       is_uptrend = current_price > ma50
 
+      # RSI (14일)
       delta = df["Close"].diff()
       gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
       loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
@@ -138,8 +139,36 @@ def analyze_stocks():
       rsi_series = 100 - (100 / (1 + rs))
       current_rsi = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50.0
 
-      stop_loss = round(current_price * 0.98)
-      take_profit = round(current_price * 1.05)
+      # [핵심 로직] ATR(14일) 변동성 기반 손절/익절 정밀 산출
+      high_low = df["High"] - df["Low"]
+      high_cp = (df["High"] - df["Close"].shift(1)).abs()
+      low_cp = (df["Low"] - df["Close"].shift(1)).abs()
+      tr = pd.concat([high_low, high_cp, low_cp], axis=1).max(axis=1)
+      atr14 = float(tr.rolling(14).mean().iloc[-1])
+
+      # 기본 ATR 멀티플라이어 (손절 -1.5 ATR / 익절 +2.5 ATR)
+      atr_stop = current_price - (1.5 * atr14)
+      atr_target = current_price + (2.5 * atr14)
+
+      # 50일선 이평선이 손절선 근처에 있으면 지지선(-0.5%)으로 정밀 보정
+      if current_price > ma50 and (current_price - ma50) <= (2.0 * atr14):
+        stop_loss = round(min(atr_stop, ma50 * 0.995))
+      else:
+        stop_loss = round(atr_stop)
+
+      # RSI 가속 시 익절 목표 상향
+      if current_rsi >= 65:
+        take_profit = round(current_price + (3.0 * atr14))
+      else:
+        take_profit = round(atr_target)
+
+      # 손절/익절 비율(%) 산출
+      stop_loss_pct = round(
+          ((stop_loss - current_price) / current_price) * 100, 1
+      )
+      take_profit_pct = round(
+          ((take_profit - current_price) / current_price) * 100, 1
+      )
 
       results.append({
           "종목명": name,
@@ -151,8 +180,11 @@ def analyze_stocks():
           "5일 수익률(%)": round(ret_5d, 2),
           "추세정배열": "상승세 (O)" if is_uptrend else "조정/하락세 (X)",
           "RSI지표": round(current_rsi, 1),
-          "추천손절가": stop_loss,
-          "추천목표가": take_profit,
+          "ATR(14일)": round(atr14),
+          "정밀손절가": stop_loss,
+          "손절폭(%)": stop_loss_pct,
+          "정밀목표가": take_profit,
+          "목표폭(%)": take_profit_pct,
       })
     except:
       continue
@@ -198,7 +230,7 @@ market_is_bullish, kospi_val = check_market_macro()
 if not market_is_bullish:
   st.warning(
       "⚠️ **[시장 매크로 경고]** 현재 코스피 지수가 20일 이동평균선 아래에"
-      " 위치해 있습니다. 매매 비중을 줄이고 리스크를 관리하세요!"
+      " 위치해 있습니다. 매매 비중을 줄이고 손절 라인을 엄격히 준수하세요!"
   )
 else:
   st.success(
@@ -207,10 +239,11 @@ else:
   )
 
 if st.button(
-    "📊 고도화 AI 주도주 스크리닝 시작", type="primary", use_container_width=True
+    "📊 정밀 ATR 주도주 스크리닝 시작", type="primary", use_container_width=True
 ):
   with st.spinner(
-      "수급, 추세, RSI 및 최근 주가 차트를 분석하는 중입니다..."
+      "종목별 변동폭(ATR 14일)과 이평선 지지 라인을 기반으로 가격을 계산하는"
+      " 중입니다..."
   ):
     df_result, price_dict = analyze_stocks()
 
@@ -219,9 +252,9 @@ if st.button(
           "데이터 분석 중 문제가 발생했습니다. 잠시 후 다시 시도해 주세요."
       )
     else:
-      st.success(f"✨ 분석 완료! (총 {len(df_result)}개 우량 주도주 분석 성공)")
+      st.success(f"✨ 분석 완료! (총 {len(df_result)}개 우량 주도주 정밀 스코어링)")
 
-      # TOP 3 카드 + 미니 주가 차트 추가
+      # TOP 3 카드 + 주가 차트 및 ATR 정밀 가이드
       st.markdown("### 🏆 오늘의 TOP 3 유망 주도주")
       top3_cols = st.columns(3)
 
@@ -244,19 +277,16 @@ if st.button(
                 unsafe_allow_html=True,
             )
 
-            # [새로 추가된 기능] TOP 3 최근 1개월 주가 미니 차트
+            # 차트 보기
             with st.expander(f"📈 {stock_name} 최근 1개월 주가 차트 보기"):
               if stock_name in price_dict:
                 df_stock = price_dict[stock_name]
-
-                # 라인 차트 생성
                 fig_mini = px.line(
                     df_stock,
                     x=df_stock.index,
                     y="Close",
                     labels={"Close": "종가(원)", "Date": "날짜"},
                 )
-
                 fig_mini.update_traces(
                     line_color="#38bdf8",
                     line_width=2.5,
@@ -273,30 +303,33 @@ if st.button(
                 )
                 st.plotly_chart(fig_mini, use_container_width=True)
 
-            # 기존 선정 이유 보기
-            with st.expander(f"💡 {stock_name} 고도화 선정 이유"):
+            # 정밀 분석 이유 및 변동성 기반 가격 표시
+            with st.expander(f"💡 {stock_name} 분석 및 정밀 가격 라인"):
               st.write(
-                  f"**1. 유동성 및 수급:** 당일 거래대금"
-                  f" **{row['당일 거래대금(억)']}억** (폭증배율:"
+                  f"**1. 당일 거래대금:** **{row['당일 거래대금(억)']}억** (평소 대비"
                   f" {row['거래대금 폭증배율']}배)"
               )
               st.write(
-                  f"**2. 추세 정배열:** {row['추세정배열']} (50일선 기준)"
+                  f"**2. 일일 평균변동폭(ATR):** 하루 평균 약"
+                  f" **{format(row['ATR(14일)'], ',')}원** 변동"
               )
               st.write(
-                  f"**3. 과열 지표(RSI):** {row['RSI지표']}점 (과열 구간 회피"
-                  " 여부 확인)"
+                  f"**3. 추세 및 과열도:** {row['추세정배열']} / RSI"
+                  f" {row['RSI지표']}점"
               )
               st.markdown("---")
-              st.info(
-                  f"🛡️ **리스크 가이드:** 손절가 **{format(row['추천손절가'], ',')}원**"
-                  f" (-2%) / 목표가 **{format(row['추천목표가'], ',')}원**"
-                  " (+5%)"
+              st.warning(
+                  f"🛑 **정밀 손절가:** **{format(row['정밀손절가'], ',')}원**"
+                  f" ({row['손절폭(%)']}%)"
+              )
+              st.success(
+                  f"🎯 **정밀 목표가:** **{format(row['정밀목표가'], ',')}원**"
+                  f" (+{row['목표폭(%)']}%)"
               )
 
       st.markdown("<br>", unsafe_allow_html=True)
 
-      # Plotly TOP 10 바 차트
+      # TOP 10 차트
       st.markdown("### 📊 TOP 10 종목 종합 점수 비교")
       top10_df = df_result.head(10).sort_values(by="종합점수", ascending=True)
 
@@ -329,16 +362,17 @@ if st.button(
       st.plotly_chart(fig, use_container_width=True)
 
       # 전체 리스트 표
-      st.markdown("### 📋 전체 추천 순위 리스트 및 리스크 가이드")
+      st.markdown("### 📋 전체 추천 순위 리스트 및 변동성 기반 가격 가이드")
       display_df = df_result[[
           "순위",
           "종목명",
           "현재가",
           "등락률(%)",
-          "추세정배열",
-          "RSI지표",
-          "추천손절가",
-          "추천목표가",
+          "ATR(14일)",
+          "정밀손절가",
+          "손절폭(%)",
+          "정밀목표가",
+          "목표폭(%)",
           "종합점수",
       ]].copy()
 
@@ -347,6 +381,6 @@ if st.button(
       )
 else:
   st.info(
-      "👆 상단의 **[고도화 AI 주도주 스크리닝 시작]** 버튼을 누르면 주가"
-      " 차트부터 종목 정밀 랭킹까지 분석이 시작됩니다."
+      "👆 상단의 **[정밀 ATR 주도주 스크리닝 시작]** 버튼을 누르면 정밀"
+      " 가격 라인 분석이 시작됩니다."
   )
