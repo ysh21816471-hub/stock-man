@@ -1,139 +1,147 @@
 from datetime import datetime, timedelta
+import numpy as np
 import pandas as pd
-from pykrx import stock
 import streamlit as st
+import yfinance as yf
 
 # 1. 페이지 레이아웃 설정
 st.set_page_config(
     page_title="나만의 주식 의사결정 매니저", page_icon="📈", layout="wide"
 )
 
-st.title("🚀 나만의 주식 의사결정 매니저 (디버깅 모드)")
+st.title("🚀 나만의 주식 의사결정 매니저 (안정형 야후파이낸스 버전)")
 st.markdown(
-    "데이터 수집 과정에서 발생하는 에러 원인을 정확히 파악하기 위한"
-    " 버전입니다."
+    "한국거래소(KRX) 서버 차단 문제를 완벽히 해결하기 위해, 글로벌 금융"
+    " 데이터인 **야후파이낸스(yfinance)**를 기반으로 주요 우량주의 거래대금"
+    " 유입과 모멘텀을 실시간 분석합니다."
 )
 
+# 2. 국내 주요 주도주(KOSPI & KOSDAQ 대표 종목) 티커 매핑
+WATCH_LIST = {
+    "삼성전자": "005930.KS",
+    "SK하이닉스": "000660.KS",
+    "LG에너지솔루션": "373220.KS",
+    "삼성바이오로직스": "207940.KS",
+    "현대차": "005380.KS",
+    "기아": "000270.KS",
+    "셀트리온": "068270.KS",
+    "POSCO홀딩스": "005490.KS",
+    "KB금융": "105560.KS",
+    "신한지주": "055550.KS",
+    "NAVER": "035420.KS",
+    "카카오": "035720.KS",
+    "LG화학": "051910.KS",
+    "HD현대중공업": "329180.KS",
+    "한화오션": "042660.KS",
+    "두산에너빌리티": "034020.KS",
+    "HMM": "011200.KS",
+    "알테오젠": "196170.KQ",
+    "에코프로비엠": "247540.KQ",
+    "에코프로": "086520.KQ",
+    "HLB": "028300.KQ",
+    "레인보우로보틱스": "277810.KQ",
+    "JYP Ent.": "035900.KQ",
+    "셀트리온제약": "068760.KQ",
+    "리노공업": "058470.KQ",
+}
 
-# 2. 스마트 자동 스크리닝 함수 (에러 세부 포착)
+
+# 3. 데이터 수집 및 분석 함수
 @st.cache_data(ttl=3600)
-def run_smart_screening():
-  today = datetime.today()
-  target_date = ""
-  df_cap = pd.DataFrame()
-
-  try:
-    # 최근 영업일 찾기 (최대 10일 전까지 탐색)
-    for i in range(10):
-      check_date = (today - timedelta(days=i)).strftime("%Y%m%d")
-      try:
-        df_cap = stock.get_market_cap_by_ticker(check_date)
-        if not df_cap.empty:
-          target_date = check_date
-          break
-      except Exception as sub_e:
+def analyze_stocks():
+  results = []
+  for name, ticker in WATCH_LIST.items():
+    try:
+      # 최근 1개월 데이터 다운로드
+      df = yf.download(ticker, period="1mo", progress=False)
+      if df.empty or len(df) < 10:
         continue
 
-    if df_cap.empty:
-      return (
-          None,
-          "최근 10일간 유효한 거래대금 데이터를 찾지 못했습니다. (휴일/주말"
-          " 영향일 수 있음)",
+      # MultiIndex 컬럼 대응 (최신 yfinance 버그 방지)
+      if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+      current_price = float(df["Close"].iloc[-1])
+      prev_price = float(df["Close"].iloc[-2])
+      change_rate = ((current_price - prev_price) / prev_price) * 100
+
+      # 당일 거래대금 (종가 * 거래량, 억원 단위)
+      recent_vol = float(df["Volume"].iloc[-1])
+      recent_val = current_price * recent_vol / 100000000
+
+      # 20일 평균 거래대금
+      avg_val = (df["Close"] * df["Volume"] / 100000000).mean()
+
+      # 거래대금 폭증 배율 (오늘 거래대금 / 20일 평균)
+      vol_spike = (recent_val / avg_val) if avg_val > 0 else 1.0
+
+      # 최근 5일 수익률(모멘텀)
+      ret_5d = (
+          (
+              (current_price - float(df["Close"].iloc[-5]))
+              / float(df["Close"].iloc[-5])
+          )
+          * 100
+          if len(df) >= 5
+          else 0.0
       )
 
-    # 거래대금 기준 상위 150개 종목 확보
-    df_cap = df_cap.sort_values(by="거래대금", ascending=False).head(150)
-
-    # 종목명 매핑
-    names = [stock.get_market_ticker_name(code) for code in df_cap.index]
-    df_cap["종목명"] = names
-    df_cap = df_cap.reset_index()
-
-    if "티커" in df_cap.columns:
-      df_cap.rename(columns={"티커": "종목코드"}, inplace=True)
-    elif "index" in df_cap.columns:
-      df_cap.rename(columns={"index": "종목코드"}, inplace=True)
-    else:
-      df_cap["종목코드"] = df_cap.index
-
-    # 펀더멘털 데이터 병합 시도
-    try:
-      df_fund = stock.get_market_fundamental_by_ticker(target_date)
-      df_merged = pd.merge(
-          df_cap, df_fund, left_on="종목코드", right_index=True, how="left"
-      )
+      results.append({
+          "종목명": name,
+          "티커": ticker,
+          "현재가": round(current_price),
+          "등락률(%)": round(change_rate, 2),
+          "당일 거래대금(억)": round(recent_val, 1),
+          "거래대금 폭증배율": round(vol_spike, 2),
+          "5일 수익률(%)": round(ret_5d, 2),
+      })
     except Exception as e:
-      df_merged = df_cap.copy()
-      df_merged["PER"] = 0
-      df_merged["PBR"] = 0
+      continue
 
-    # 데이터 정제
-    df_merged["PER"] = pd.to_numeric(
-        df_merged["PER"], errors="coerce"
-    ).fillna(0)
-    df_merged["PBR"] = pd.to_numeric(
-        df_merged["PBR"], errors="coerce"
-    ).fillna(0)
+  if not results:
+    return pd.DataFrame()
 
-    df_filtered = df_merged[df_merged["거래대금"] >= 1000000000].copy()
-    if df_filtered.empty:
-      df_filtered = df_merged.copy()
+  res_df = pd.DataFrame(results)
 
-    # 스마트 스코어링 산출
-    df_filtered["유동성점수"] = df_filtered["거래대금"].rank(pct=True) * 50
+  # [스마트 스코어링 산출]
+  res_df["유동성점수"] = res_df["당일 거래대금(억)"].rank(pct=True) * 40
+  res_df["수급폭증점수"] = res_df["거래대금 폭증배율"].rank(pct=True) * 30
+  res_df["모멘텀점수"] = res_df["5일 수익률(%)"].rank(pct=True) * 30
+  res_df["종합점수"] = (
+      res_df["유동성점수"] + res_df["수급폭증점수"] + res_df["모멘텀점수"]
+  ).round(1)
 
-    def calc_per_score(per):
-      if per > 0 and per < 50:
-        return 50 * (1 - (per / 50))
-      elif per >= 50:
-        return 15
-      else:
-        return 25
-
-    df_filtered["재무점수"] = df_filtered["PER"].apply(calc_per_score)
-    df_filtered["종합점수"] = (
-        df_filtered["유동성점수"] + df_filtered["재무점수"]
-    ).round(1)
-    df_filtered = df_filtered.sort_values(
-        by="종합점수", ascending=False
-    ).head(30)
-
-    return df_filtered, target_date
-
-  except Exception as err:
-    # 에러 발생 시 정확한 시스템 에러 메시지 반환
-    return None, f"CRITICAL_ERROR: {str(err)}"
+  res_df = res_df.sort_values(by="종합점수", ascending=False).reset_index(
+      drop=True
+  )
+  return res_df
 
 
-# 3. 웹 UI 구성
-if st.button("🔍 에러 원인 확인 및 스크리닝 시작", type="primary"):
-  with st.spinner("데이터를 가져오는 중입니다..."):
-    df_result, fetched_date = run_smart_screening()
+# 4. 웹 UI 구성
+if st.button("🔍 AI 주식 매니저 분석 시작하기", type="primary"):
+  with st.spinner(
+      "야후파이낸스를 통해 주요 주도주 수급 및 모멘텀을 분석 중입니다..."
+  ):
+    df_result = analyze_stocks()
 
-    # df_result가 DataFrame이 아니거나 비어있다면 fetched_date에 담긴 에러 문구 출력
-    if df_result is None or df_result.empty:
-      st.error(f"❌ 분석 실패 원인: {fetched_date}")
-      st.info(
-          "💡 **팁:** 만약 에러 내용에 `Connection` 이나 `HTTP` 관련 내용이"
-          " 있다면, 한국거래소(KRX) 서버 측에서 일시적으로 요청을"
-          " 차단했거나 주말이라 데이터 조회가 막힌 것일 수 있습니다."
+    if df_result.empty:
+      st.error(
+          "데이터를 불러오는 중 문제가 발생했습니다. 잠시 후 다시 시도해"
+          " 주세요."
       )
     else:
-      formatted_date = (
-          f"{fetched_date[:4]}-{fetched_date[4:6]}-{fetched_date[6:]}"
+      st.success(
+          f"✨ 분석 완료! (총 {len(df_result)}개 우량 주도주 스크리닝 성공)"
       )
-      st.success(f"✨ 분석 성공! (기준일: {formatted_date})")
 
-      display_df = df_result[
-          ["종목명", "종가", "등락률", "거래대금", "PER", "PBR", "종합점수"]
-      ].copy()
-      display_df["거래대금(억)"] = (
-          display_df["거래대금"] / 100000000
-      ).round(1)
-      display_df = display_df.drop(columns=["거래대금"])
-      display_df.reset_index(drop=True, inplace=True)
+      st.subheader("📋 오늘의 주도주 추천 리스트 (종합 점수 순)")
+      st.dataframe(df_result, use_container_width=True)
 
-      st.subheader("📋 오늘의 추천 상위 종목 리스트")
-      st.dataframe(display_df, use_container_width=True)
+      st.subheader("📈 상위 종목 종합 점수 비교 (TOP 10)")
+      chart_data = df_result.set_index("종목명")["종합점수"].head(10)
+      st.bar_chart(chart_data)
 else:
-  st.info("👈 버튼을 눌러 에러 원인을 확인해 보세요.")
+  st.info(
+      "👈 왼쪽 사이드바의 **[AI 주식 매니저 분석 시작하기]** 버튼을 누르면"
+      " 분석이 시작됩니다."
+  )
