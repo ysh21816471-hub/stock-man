@@ -147,7 +147,6 @@ def run_multi_strategy_screening(market_regimes):
   price_histories = {}
 
   for name, (ticker, market) in WATCH_POOL.items():
-    # 해당 시장 국면 확인 (하락장 또는 에러 시 매수 신호 제한)
     m_state = market_regimes.get(market, {}).get("state", "ERROR")
     is_market_bearish = "하락장" in m_state or "ERROR" in m_state
 
@@ -189,7 +188,6 @@ def run_multi_strategy_screening(market_regimes):
     atr = calculate_atr(df, 14)
     c_atr = float(atr.iloc[-1])
 
-    # 시장이 하락장이면 기회점수 대폭 감점 및 신호 차단
     if is_market_bearish:
       results.append({
           "종목명": name,
@@ -233,7 +231,7 @@ def run_multi_strategy_screening(market_regimes):
     is_pullback = uptrend and near_ma and vol_dry and rsi_turning and bullish_candle
     score_B = 85 if is_pullback else 0
 
-    # 전략 C: 수급폭발형 (close.pct_change() 사용)
+    # 전략 C: 수급폭발형
     pct_changes = close.pct_change()
     c_pct = float(pct_changes.iloc[-1]) if not pct_changes.empty else 0.0
     is_surge = (
@@ -261,7 +259,6 @@ def run_multi_strategy_screening(market_regimes):
       primary_strat = "/".join(strategies)
       opportunity_score = round(max(score_A, score_B, score_C), 1)
 
-    # 손절 및 목표가 산정 (ATR + MA50 지지선 결합, 임의 강제 제한 없음)
     atr_stop = c_price - (1.8 * c_atr)
     ma_support = c_ma50 * 0.99
     stop_loss = (
@@ -311,7 +308,7 @@ def run_multi_strategy_screening(market_regimes):
 
 
 # ==========================================
-# 5. 정밀 백테스트 엔진 (갭 체결 순서 및 일별 에퀴티 반영)
+# 5. 정밀 백테스트 엔진 (문법 오류 수정 완료)
 # ==========================================
 def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=10000000):
   df = safe_download(ticker, period="12mo")
@@ -361,10 +358,10 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
       entry_price = c_open * (1 + slippage)
       risk_per_share = entry_price - pending_stop
       if risk_per_share > 0:
-        max_risk_$ = capital * 0.01
-        max_weight_$ = capital * 0.20
-        shares_by_risk = int(max_risk_$ // risk_per_share)
-        shares_by_weight = int(max_weight_$ // entry_price)
+        max_risk_amt = capital * 0.01  # SyntaxError 수정완료 ($ 제거)
+        max_weight_amt = capital * 0.20  # SyntaxError 수정완료 ($ 제거)
+        shares_by_risk = int(max_risk_amt // risk_per_share)
+        shares_by_weight = int(max_weight_amt // entry_price)
         shares = min(shares_by_risk, shares_by_weight)
         if shares > 0:
           cost = shares * entry_price * (1 + buy_fee)
@@ -377,25 +374,22 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
             entry_date = c_date
       pending_entry = False
 
-    # 2. 보유 포지션 청산 조건 검사 (요청하신 체결 순서 반영)
+    # 2. 보유 포지션 청산 조건 검사
     exit_triggered = False
     exit_p = 0
     exit_reason = ""
 
     if in_position:
       holding_days += 1
-      # 순서 1: 해당 거래일 시가가 손절가 이하인지 확인 (갭 하락)
       if c_open <= stop_price:
         exit_p = c_open * (1 - slippage)
         exit_reason = "손절(Gap)"
         exit_triggered = True
-      # 순서 2: 해당 거래일 시가가 목표가 이상인지 확인 (갭 상승)
       elif c_open >= target_price:
         exit_p = c_open * (1 - slippage)
         exit_reason = "익절(Gap)"
         exit_triggered = True
       else:
-        # 순서 3 & 4: 고가/저가 확인 및 동시 도달 시 손절 우선(보수적 처리)
         hit_stop = c_low <= stop_price
         hit_target = c_high >= target_price
 
@@ -411,7 +405,7 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
           exit_p = target_price * (1 - slippage)
           exit_reason = "익절"
           exit_triggered = True
-        elif holding_days >= 20:  # 순서 5: 시간 청산
+        elif holding_days >= 20:
           exit_p = c_close * (1 - slippage)
           exit_reason = "시간청산"
           exit_triggered = True
@@ -436,11 +430,11 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
         shares = 0
         holding_days = 0
 
-    # 3. 매일 종가 기준 일별 평가 자산 곡선 산출 (미실현 손익 반영)
+    # 3. 매일 종가 기준 일별 평가 자산 곡선 산출
     current_equity = cash + (shares * c_close if in_position else 0)
     equity_curve.append({"date": c_date, "equity": current_equity})
 
-    # 4. 신규 매수 신호 탐지 (다음 날 시가 진입 예약)
+    # 4. 신규 매수 신호 탐지
     if not in_position and not pending_entry and i < len(df) - 1:
       c_val = float((close.iloc[i] * volume.iloc[i]) / 1e8)
       v_med = float(val_med20.iloc[i])
@@ -477,14 +471,12 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
       ((final_equity - initial_capital) / initial_capital) * 100, 2
   )
 
-  # CAGR 계산 (거래 기간 기준)
   total_days = (eq_df["date"].iloc[-1] - eq_df["date"].iloc[0]).days
   years = max(total_days / 365.25, 0.25)
   cagr = round(
       (((final_equity / initial_capital) ** (1 / years)) - 1) * 100, 2
   )
 
-  # MDD 계산 (일별 에퀴티 곡선 기준)
   eq_df["peak"] = eq_df["equity"].cummax()
   eq_df["drawdown"] = (eq_df["equity"] - eq_df["peak"]) / eq_df["peak"] * 100
   mdd = round(eq_df["drawdown"].min(), 2)
@@ -520,7 +512,6 @@ def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=1000
     avg_loss = 0
     avg_hold = 0
 
-  # 벤치마크 (단순 보유 Buy & Hold 수익률)
   bench_return = round(
       ((float(close.iloc[-1]) - float(close.iloc[60])) / float(close.iloc[60]))
       * 100,
