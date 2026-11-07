@@ -53,7 +53,7 @@ def load_and_screen_data(min_val_billion, max_per_limit):
   df_merged["종목명"] = names
 
   # 3. 필터링 로직 적용
-  min_trading_value = min_val_billion * 100000000   조 단위/억 단위 변환
+  min_trading_value = min_val_billion * 100000000   
   df_filtered = df_merged[
       (df_merged["거래대금"] >= min_trading_value)
       & (df_merged["PER"] > 0)
