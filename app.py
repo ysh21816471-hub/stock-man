@@ -10,7 +10,7 @@ import yfinance as yf
 # 1. 시스템 설정 및 UI 스타일
 # ==========================================
 st.set_page_config(
-    page_title="주식 의사결정 매니저 Pro 3차", page_icon="🚀", layout="wide"
+    page_title="주식 의사결정 매니저 Pro 4차", page_icon="📈", layout="wide"
 )
 
 st.markdown(
@@ -32,12 +32,12 @@ st.markdown(
 )
 
 st.markdown(
-    '<p class="main-title">🚀 주식 의사결정 매니저 Pro (3차 고도화 에디션)</p>',
+    '<p class="main-title">📈 주식 의사결정 매니저 Pro (4차 고도화 에디션)</p>',
     unsafe_allow_html=True,
 )
 st.markdown(
-    '<p class="sub-title">엄격한 백테스트 엔진 · 보수적 자금 관리 · 독립 시장 국면'
-    " 분석 시스템</p>",
+    '<p class="sub-title">정밀 갭 체결 백테스트 엔진 · 독립 시장 국면 통제 ·'
+    " 보수적 자금 관리</p>",
     unsafe_allow_html=True,
 )
 
@@ -63,7 +63,7 @@ def calculate_atr(df, period=14):
   return tr.ewm(alpha=1 / period, adjust=False).mean()
 
 
-def safe_download(ticker, period="8mo"):
+def safe_download(ticker, period="12mo"):
   try:
     df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
     if df.empty or len(df) < 60:
@@ -76,19 +76,16 @@ def safe_download(ticker, period="8mo"):
 
 
 # ==========================================
-# 3. 독립적 시장 국면 분석 (KOSPI & KOSDAQ)
+# 3. KOSPI & KOSDAQ 독립적 시장 국면 진단
 # ==========================================
 @st.cache_data(ttl=1800)
-def analyze_market_regime():
-  regime = {
-      "KOSPI": {"state": "ERROR", "val": 0, "ma20": 0, "ma60": 0},
-      "KOSDAQ": {"state": "ERROR", "val": 0, "ma20": 0, "ma60": 0},
-      "trading_approved": False,
-  }
+def analyze_market_regimes():
+  regimes = {}
   try:
     for name, tk in [("KOSPI", "^KS11"), ("KOSDAQ", "^KQ11")]:
       df = safe_download(tk, period="6mo")
       if df is None:
+        regimes[name] = {"state": "ERROR", "val": 0, "ma20": 0, "ma60": 0}
         continue
       close = df["Close"]
       val = float(close.iloc[-1])
@@ -102,24 +99,18 @@ def analyze_market_regime():
       else:
         state = "하락장 (Bearish)"
 
-      regime[name] = {
+      regimes[name] = {
           "state": state,
           "val": round(val, 2),
           "ma20": round(ma20, 2),
           "ma60": round(ma60, 2),
       }
-
-    # 적어도 한 시장이 중립 이상이고 데이터 수집 성공 시 승인
-    if regime["KOSPI"]["state"] != "ERROR" and regime["KOSDAQ"]["state"] != "ERROR":
-      if (
-          "하락장" not in regime["KOSPI"]["state"]
-          or "하락장" not in regime["KOSDAQ"]["state"]
-      ):
-        regime["trading_approved"] = True
   except Exception:
-    regime["trading_approved"] = False
-
-  return regime
+    regimes = {
+        "KOSPI": {"state": "ERROR", "val": 0, "ma20": 0, "ma60": 0},
+        "KOSDAQ": {"state": "ERROR", "val": 0, "ma20": 0, "ma60": 0},
+    }
+  return regimes
 
 
 # ==========================================
@@ -151,16 +142,19 @@ WATCH_POOL = {
 
 
 @st.cache_data(ttl=1800)
-def run_multi_strategy_screening():
+def run_multi_strategy_screening(market_regimes):
   results = []
   price_histories = {}
 
   for name, (ticker, market) in WATCH_POOL.items():
+    # 해당 시장 국면 확인 (하락장 또는 에러 시 매수 신호 제한)
+    m_state = market_regimes.get(market, {}).get("state", "ERROR")
+    is_market_bearish = "하락장" in m_state or "ERROR" in m_state
+
     df = safe_download(ticker, period="8mo")
     if df is None or len(df) < 100:
       continue
 
-    # 거래정지 및 0 거래량 필터
     if df["Volume"].iloc[-1] == 0 or df["Close"].isna().iloc[-1]:
       continue
 
@@ -186,7 +180,6 @@ def run_multi_strategy_screening():
 
     val_series = (close * volume) / 1e8
     c_val = float(val_series.iloc[-1])
-    val_mean5 = float(val_series.rolling(5).mean().iloc[-1])
     val_med20 = float(val_series.rolling(20).median().iloc[-1])
     val_spike = (c_val / val_med20) if val_med20 > 0 else 1.0
 
@@ -196,49 +189,61 @@ def run_multi_strategy_screening():
     atr = calculate_atr(df, 14)
     c_atr = float(atr.iloc[-1])
 
-    # ----------------------------------------------------
-    # 전략 A: 돌파형 주도주 (Breakout)
-    # ----------------------------------------------------
+    # 시장이 하락장이면 기회점수 대폭 감점 및 신호 차단
+    if is_market_bearish:
+      results.append({
+          "종목명": name,
+          "티커": ticker,
+          "시장": market,
+          "현재가": round(c_price),
+          "등락률(%)": round(change_rate, 2),
+          "거래대금(억)": round(c_val, 1),
+          "거래대금폭증": round(val_spike, 2),
+          "RSI": round(c_rsi, 1),
+          "ATR": round(c_atr),
+          "포착전략": "시장하락통제 (매수금지)",
+          "기회점수": 0.0,
+          "위험도": "HIGH",
+          "손절가": 0,
+          "손절폭(%)": 0.0,
+          "1차목표가": 0,
+          "손익비": 0.0,
+          "기관외인수급": "[데이터 한계: 미구현]",
+      })
+      continue
+
+    # 전략 A: 돌파형
     high_20 = float(high.iloc[-21:-1].max())
-    high_60 = float(high.iloc[-61:-1].max())
     close_near_high = (c_price - float(low.iloc[-1])) / (
         float(high.iloc[-1]) - float(low.iloc[-1]) + 1e-10
     ) >= 0.7
-    vcp_cond = c_atr < float(atr.rolling(20).mean().iloc[-1])  # 변동성 축소
-
     is_breakout = (
         (c_price >= high_20) and (val_spike >= 1.5) and close_near_high
     )
-    score_A = 75 if is_breakout else 0
-    if is_breakout and vcp_cond:
-      score_A += 15
+    score_A = 80 if is_breakout else 0
 
-    # ----------------------------------------------------
-    # 전략 B: 눌림목 매수형 (Pullback) - 엄격한 필터 적용
-    # ----------------------------------------------------
+    # 전략 B: 눌림목형
     uptrend = (c_price > c_ma50) and (c_ma20 >= c_ma60)
     near_ma = abs(c_price - c_ma20) / c_ma20 <= 0.03
     vol_dry = float(volume.iloc[-1]) < float(volume.rolling(5).mean().iloc[-1])
     rsi_turning = (
         c_rsi > float(rsi.iloc[-2]) and float(rsi.iloc[-2]) < 50
-    )  # 50 아래에서 골든크로스 형태 반등
+    )
     bullish_candle = c_price > float(open_p.iloc[-1])
-
     is_pullback = uptrend and near_ma and vol_dry and rsi_turning and bullish_candle
     score_B = 85 if is_pullback else 0
 
-    # ----------------------------------------------------
-    # 전략 C: 수급 폭발형 (Volume Surge)
-    # ----------------------------------------------------
+    # 전략 C: 수급폭발형 (close.pct_change() 사용)
+    pct_changes = close.pct_change()
+    c_pct = float(pct_changes.iloc[-1]) if not pct_changes.empty else 0.0
     is_surge = (
         (val_spike >= 2.0)
-        and (change_rate >= 3.0)
+        and (c_pct >= 0.03)
         and (c_val >= 200)
         and (c_rsi < 75)
-    )  # 단기 과열(75이상) 필터
-    score_C = 70 + min(30, val_spike * 5) if is_surge else 0
+    )
+    score_C = 75 + min(25, val_spike * 5) if is_surge else 0
 
-    # 종합 스코어 및 전략 태그
     strategies = []
     if score_A > 0:
       strategies.append("돌파형")
@@ -256,7 +261,7 @@ def run_multi_strategy_screening():
       primary_strat = "/".join(strategies)
       opportunity_score = round(max(score_A, score_B, score_C), 1)
 
-    # 손절 및 목표가 산정 (ATR + MA50 지지선 결합)
+    # 손절 및 목표가 산정 (ATR + MA50 지지선 결합, 임의 강제 제한 없음)
     atr_stop = c_price - (1.8 * c_atr)
     ma_support = c_ma50 * 0.99
     stop_loss = (
@@ -264,18 +269,9 @@ def run_multi_strategy_screening():
         if c_price > c_ma50
         else round(atr_stop)
     )
-
-    stop_pct = ((stop_loss - c_price) / c_price) * 100
-    if stop_pct > -1.5:
-      stop_loss = round(c_price * 0.985)
-      stop_pct = -1.5
-    elif stop_pct < -7.0:  # 손절폭이 너무 넓으면 제한
-      stop_loss = round(c_price * 0.93)
-      stop_pct = -7.0
+    stop_pct = round(((stop_loss - c_price) / c_price) * 100, 1)
 
     target_1st = round(c_price + (2.0 * c_atr))
-    target_2nd = round(c_price + (3.5 * c_atr))
-
     risk_amt = c_price - stop_loss
     reward_amt = target_1st - c_price
     rr_ratio = round(reward_amt / risk_amt, 2) if risk_amt > 0 else 0.0
@@ -293,8 +289,6 @@ def run_multi_strategy_screening():
         "현재가": round(c_price),
         "등락률(%)": round(change_rate, 2),
         "거래대금(억)": round(c_val, 1),
-        "5일평균대금(억)": round(val_mean5, 1),
-        "20일중앙대금(억)": round(val_med20, 1),
         "거래대금폭증": round(val_spike, 2),
         "RSI": round(c_rsi, 1),
         "ATR": round(c_atr),
@@ -302,9 +296,8 @@ def run_multi_strategy_screening():
         "기회점수": opportunity_score,
         "위험도": risk_level,
         "손절가": stop_loss,
-        "손절폭(%)": round(stop_pct, 1),
+        "손절폭(%)": stop_pct,
         "1차목표가": target_1st,
-        "2차목표가": target_2nd,
         "손익비": rr_ratio,
         "기관외인수급": "[데이터 한계: 미구현]",
     })
@@ -318,9 +311,9 @@ def run_multi_strategy_screening():
 
 
 # ==========================================
-# 5. 백테스트 엔진 (복리, 수수료, 갭, 시간청산 반영)
+# 5. 정밀 백테스트 엔진 (갭 체결 순서 및 일별 에퀴티 반영)
 # ==========================================
-def run_strategy_backtest(ticker, strategy_type="돌파형", initial_capital=10000000):
+def run_precise_backtest(ticker, strategy_type="돌파형", initial_capital=10000000):
   df = safe_download(ticker, period="12mo")
   if df is None or len(df) < 100:
     return None
@@ -335,164 +328,262 @@ def run_strategy_backtest(ticker, strategy_type="돌파형", initial_capital=100
   val_med20 = ((close * volume) / 1e8).rolling(20).median()
   rsi = calculate_wilder_rsi(close, 14)
   atr = calculate_atr(df, 14)
+  pct_changes = close.pct_change()
 
   capital = initial_capital
-  trades = []
-  equity_curve = [initial_capital]
-
+  cash = initial_capital
+  shares = 0
   in_position = False
   entry_price = 0
   stop_price = 0
   target_price = 0
   holding_days = 0
-  max_hold = 20  # 최대 보유 기간(시간 청산)
 
-  for i in range(60, len(df) - 1):
-    c_price = float(close.iloc[i])
+  equity_curve = []
+  trades = []
+  pending_entry = False
+  pending_stop = 0
+  pending_target = 0
+
+  slippage = 0.002
+  buy_fee = 0.00015
+  sell_fee_tax = 0.00215
+
+  for i in range(60, len(df)):
+    c_date = df.index[i]
+    c_open = float(open_p.iloc[i])
     c_high = float(high.iloc[i])
     c_low = float(low.iloc[i])
-    next_open = float(open_p.iloc[i + 1])
-    c_val = float((close.iloc[i] * volume.iloc[i]) / 1e8)
-    v_med20 = float(val_med20.iloc[i])
-    c_rsi = float(rsi.iloc[i])
-    c_atr = float(atr.iloc[i])
-    c_ma50 = float(ma50.iloc[i])
+    c_close = float(close.iloc[i])
+
+    # 1. 미체결 진입 대기 신호가 있었다면 당일 시가(Open)로 매수 집행
+    if pending_entry and not in_position:
+      entry_price = c_open * (1 + slippage)
+      risk_per_share = entry_price - pending_stop
+      if risk_per_share > 0:
+        max_risk_$ = capital * 0.01
+        max_weight_$ = capital * 0.20
+        shares_by_risk = int(max_risk_$ // risk_per_share)
+        shares_by_weight = int(max_weight_$ // entry_price)
+        shares = min(shares_by_risk, shares_by_weight)
+        if shares > 0:
+          cost = shares * entry_price * (1 + buy_fee)
+          if cost <= cash:
+            cash -= cost
+            stop_price = pending_stop
+            target_price = pending_target
+            in_position = True
+            holding_days = 0
+            entry_date = c_date
+      pending_entry = False
+
+    # 2. 보유 포지션 청산 조건 검사 (요청하신 체결 순서 반영)
+    exit_triggered = False
+    exit_p = 0
+    exit_reason = ""
 
     if in_position:
       holding_days += 1
-      # 갭 하락 손절 또는 갭 상승 익절 처리 (시초가 반영)
-      exit_price = 0
-      exit_reason = ""
-
-      if next_open <= stop_price:  # 손절가 이탈 갭 하락
-        exit_price = next_open * 0.998  # 슬리피지 반영
+      # 순서 1: 해당 거래일 시가가 손절가 이하인지 확인 (갭 하락)
+      if c_open <= stop_price:
+        exit_p = c_open * (1 - slippage)
         exit_reason = "손절(Gap)"
-      elif next_open >= target_price:  # 목표가 도달 갭 상승
-        exit_price = next_open * 0.998
+        exit_triggered = True
+      # 순서 2: 해당 거래일 시가가 목표가 이상인지 확인 (갭 상승)
+      elif c_open >= target_price:
+        exit_p = c_open * (1 - slippage)
         exit_reason = "익절(Gap)"
-      elif c_low <= stop_price:
-        exit_price = stop_price * 0.998
-        exit_reason = "손절"
-      elif c_high >= target_price:
-        exit_price = target_price * 0.998
-        exit_reason = "익절"
-      elif holding_days >= max_hold:
-        exit_price = c_price * 0.998
-        exit_reason = "시간청산"
+        exit_triggered = True
+      else:
+        # 순서 3 & 4: 고가/저가 확인 및 동시 도달 시 손절 우선(보수적 처리)
+        hit_stop = c_low <= stop_price
+        hit_target = c_high >= target_price
 
-      if exit_reason:
-        # 보수적 동시 충돌 처리: 시초가 기준 손절/익절 동시 발생 시 손절 우선
-        if c_low <= stop_price and c_high >= target_price and "Gap" not in exit_reason:
-          exit_price = stop_price * 0.998
-          exit_reason = "손절(동시충돌우선)"
+        if hit_stop and hit_target:
+          exit_p = stop_price * (1 - slippage)
+          exit_reason = "손절(동시도달우선)"
+          exit_triggered = True
+        elif hit_stop:
+          exit_p = stop_price * (1 - slippage)
+          exit_reason = "손절"
+          exit_triggered = True
+        elif hit_target:
+          exit_p = target_price * (1 - slippage)
+          exit_reason = "익절"
+          exit_triggered = True
+        elif holding_days >= 20:  # 순서 5: 시간 청산
+          exit_p = c_close * (1 - slippage)
+          exit_reason = "시간청산"
+          exit_triggered = True
 
-        # 수수료 및 세금 반영 (매수 0.015%, 매도+세금 0.215%)
-        net_return = (exit_price - entry_price) / entry_price - 0.0023
-        pnl = capital * 0.1 * net_return  # 10% 비중 베팅 가정
-        capital += pnl
-        equity_curve.append(capital)
+      if exit_triggered:
+        proceeds = shares * exit_p * (1 - sell_fee_tax)
+        cash += proceeds
+        capital = cash
+        pnl = proceeds - (shares * entry_price * (1 + buy_fee))
+        net_ret = (exit_p - entry_price) / entry_price - 0.0023
 
         trades.append({
-            "return_pct": round(net_return * 100, 2),
-            "result": "WIN" if net_return > 0 else "LOSS",
+            "entry_date": entry_date,
+            "exit_date": c_date,
+            "return_pct": round(net_ret * 100, 2),
+            "pnl_dollar": round(pnl),
+            "result": "WIN" if pnl > 0 else "LOSS",
             "reason": exit_reason,
+            "holding_days": holding_days,
         })
         in_position = False
+        shares = 0
         holding_days = 0
-      continue
 
-    # 진입 조건 검사
-    signal = False
-    if strategy_type == "돌파형":
-      high_20 = float(high.iloc[i - 20 : i].max())
-      signal = c_price >= high_20 and (c_val / (v_med20 + 1e-10)) >= 1.5
-    elif strategy_type == "눌림목형":
-      signal = (
-          c_price > c_ma50
-          and abs(c_price - float(close.rolling(20).mean().iloc[i])) / c_price <= 0.03
-          and c_rsi < 55
-      )
-    elif strategy_type == "수급폭발형":
-      signal = (c_val / (v_med20 + 1e-10)) >= 2.0 and float(df["Change"].iloc[i]) >= 0.03
+    # 3. 매일 종가 기준 일별 평가 자산 곡선 산출 (미실현 손익 반영)
+    current_equity = cash + (shares * c_close if in_position else 0)
+    equity_curve.append({"date": c_date, "equity": current_equity})
 
-    if signal and not in_position:
-      entry_price = next_open * 1.002  # 슬리피지 반영 매수
-      stop_price = entry_price - (1.8 * c_atr)
-      target_price = entry_price + (2.5 * c_atr)
-      in_position = True
-      holding_days = 0
+    # 4. 신규 매수 신호 탐지 (다음 날 시가 진입 예약)
+    if not in_position and not pending_entry and i < len(df) - 1:
+      c_val = float((close.iloc[i] * volume.iloc[i]) / 1e8)
+      v_med = float(val_med20.iloc[i])
+      c_rsi = float(rsi.iloc[i])
+      c_atr = float(atr.iloc[i])
+      c_ma50 = float(ma50.iloc[i])
+      c_pct = float(pct_changes.iloc[i]) if not pct_changes.empty else 0.0
 
-  if not trades:
+      signal = False
+      if strategy_type == "돌파형":
+        high_20 = float(high.iloc[i - 20 : i].max())
+        signal = c_close >= high_20 and (c_val / (v_med + 1e-10)) >= 1.5
+      elif strategy_type == "눌림목형":
+        signal = (
+            c_close > c_ma50
+            and abs(c_close - float(close.rolling(20).mean().iloc[i])) / c_close
+            <= 0.03
+            and c_rsi < 55
+        )
+      elif strategy_type == "수급폭발형":
+        signal = (c_val / (v_med + 1e-10)) >= 2.0 and c_pct >= 0.03
+
+      if signal:
+        pending_entry = True
+        pending_stop = c_close - (1.8 * c_atr)
+        pending_target = c_close + (2.5 * c_atr)
+
+  if not trades and len(equity_curve) == 0:
     return None
 
-  tdf = pd.DataFrame(trades)
-  wins = len(tdf[tdf["result"] == "WIN"])
-  total = len(tdf)
-  win_rate = round((wins / total) * 100, 1)
+  eq_df = pd.DataFrame(equity_curve)
+  final_equity = float(eq_df["equity"].iloc[-1])
+  cum_return = round(
+      ((final_equity - initial_capital) / initial_capital) * 100, 2
+  )
 
-  cum_return = round(((capital - initial_capital) / initial_capital) * 100, 2)
-  avg_win = tdf[tdf["result"] == "WIN"]["return_pct"].mean() if wins > 0 else 0
-  avg_loss = abs(tdf[tdf["result"] == "LOSS"]["return_pct"].mean()) if (total - wins) > 0 else 1
-  profit_factor = round((avg_win * wins) / (avg_loss * (total - wins)), 2) if (total - wins) > 0 else 9.99
+  # CAGR 계산 (거래 기간 기준)
+  total_days = (eq_df["date"].iloc[-1] - eq_df["date"].iloc[0]).days
+  years = max(total_days / 365.25, 0.25)
+  cagr = round(
+      (((final_equity / initial_capital) ** (1 / years)) - 1) * 100, 2
+  )
 
-  eq_series = pd.Series(equity_curve)
-  peak = eq_series.cummax()
-  mdd = round(((eq_series - peak) / peak).min() * 100, 2)
+  # MDD 계산 (일별 에퀴티 곡선 기준)
+  eq_df["peak"] = eq_df["equity"].cummax()
+  eq_df["drawdown"] = (eq_df["equity"] - eq_df["peak"]) / eq_df["peak"] * 100
+  mdd = round(eq_df["drawdown"].min(), 2)
+
+  tdf = pd.DataFrame(trades) if trades else pd.DataFrame()
+  if not tdf.empty:
+    wins = len(tdf[tdf["result"] == "WIN"])
+    total = len(tdf)
+    win_rate = round((wins / total) * 100, 1)
+
+    total_profit_dlr = (
+        tdf[tdf["pnl_dollar"] > 0]["pnl_dollar"].sum() if wins > 0 else 0
+    )
+    total_loss_dlr = (
+        abs(tdf[tdf["pnl_dollar"] < 0]["pnl_dollar"].sum())
+        if (total - wins) > 0
+        else 1
+    )
+    profit_factor = (
+        round(total_profit_dlr / total_loss_dlr, 2)
+        if total_loss_dlr > 0
+        else 9.99
+    )
+
+    avg_win = round(tdf[tdf["result"] == "WIN"]["pnl_dollar"].mean(), 1) if wins > 0 else 0
+    avg_loss = round(tdf[tdf["result"] == "LOSS"]["pnl_dollar"].mean(), 1) if (total - wins) > 0 else 0
+    avg_hold = round(tdf["holding_days"].mean(), 1)
+  else:
+    win_rate = 0.0
+    profit_factor = 0.0
+    total = 0
+    avg_win = 0
+    avg_loss = 0
+    avg_hold = 0
+
+  # 벤치마크 (단순 보유 Buy & Hold 수익률)
+  bench_return = round(
+      ((float(close.iloc[-1]) - float(close.iloc[60])) / float(close.iloc[60]))
+      * 100,
+      2,
+  )
 
   return {
       "strategy": strategy_type,
       "total_trades": total,
       "win_rate": win_rate,
       "cum_return": cum_return,
+      "cagr": cagr,
       "profit_factor": profit_factor,
       "mdd": mdd,
-      "final_capital": round(capital),
+      "final_capital": round(final_equity),
+      "avg_win_dollar": avg_win,
+      "avg_loss_dollar": avg_loss,
+      "avg_holding_days": avg_hold,
+      "benchmark_return": bench_return,
       "history": tdf,
+      "equity_curve": eq_df,
   }
 
 
 # ==========================================
 # 6. Streamlit 사용자 인터페이스 (UI)
 # ==========================================
-regime = analyze_market_regime()
+market_regimes = analyze_market_regimes()
 
-# 상단 시장 환경 매크로 배너
-st.markdown("### 🌐 독립적 시장 국면 진단")
-mc1, mc2, mc3 = st.columns(3)
-
+st.markdown("### 🌐 KOSPI & KOSDAQ 독립적 시장 국면 진단")
+mc1, mc2 = st.columns(2)
 with mc1:
-  kpi = regime["KOSPI"]
+  kpi = market_regimes.get("KOSPI", {})
   st.metric(
       "KOSPI 시장",
-      f"{kpi['val']} pt" if kpi["val"] else "데이터 오류",
-      delta=kpi["state"],
+      f"{kpi.get('val', 0)} pt",
+      delta=kpi.get("state", "ERROR"),
   )
 with mc2:
-  ksq = regime["KOSDAQ"]
+  ksq = market_regimes.get("KOSDAQ", {})
   st.metric(
       "KOSDAQ 시장",
-      f"{ksq['val']} pt" if ksq["val"] else "데이터 오류",
-      delta=ksq["state"],
+      f"{ksq.get('val', 0)} pt",
+      delta=ksq.get("state", "ERROR"),
   )
-with mc3:
-  if regime["trading_approved"]:
-    st.success("✅ **[매매 승인]** 시장 환경 양호 (스크리닝 정상 가동)")
-  else:
-    st.error("⚠️ **[매매 통제]** 주요 시장 하락세 또는 데이터 오류 감지")
 
 st.markdown("---")
 
 tab1, tab2, tab3 = st.tabs(
-    ["🔍 다중 전략 스크리닝", "🧮 보수적 자금 관리기", "📜 독립 전략 백테스트"]
+    ["🔍 다중 전략 스크리닝", "🧮 보수적 자금 관리기", "📜 정밀 전략 백테스트"]
 )
 
 # ----------------------------------------------------
 # TAB 1: 스크리닝
 # ----------------------------------------------------
 with tab1:
-  if st.button("🚀 실시간 전략 스크리닝 실행", type="primary", use_container_width=True):
-    with st.spinner("시장 데이터 수집 및 3대 전략 정밀 채점 중..."):
-      df_res, price_hist = run_multi_strategy_screening()
+  if st.button(
+      "🚀 실시간 전략 스크리닝 실행", type="primary", use_container_width=True
+  ):
+    with st.spinner(
+        "시장 국면 반영 및 3대 전략(돌파/눌림목/수급) 스크리닝 중..."
+    ):
+      df_res, price_hist = run_multi_strategy_screening(market_regimes)
       if df_res.empty:
         st.warning("조건을 충족하는 종목이 없습니다.")
       else:
@@ -514,7 +605,7 @@ with tab1:
                 <div class="metric-card">
                     <span class="badge-strategy">{row['포착전략']}</span>
                     <h3 style="color:#ffffff; margin:8px 0px;">{name} ({int(row['순위'])}위)</h3>
-                    <p style="color:#cbd5e1; margin:0px;">기회점수: <b style="color:#38bdf8;">{row['기회점수']}점</b> | 소속: <b>{row['시장']}</b></p>
+                    <p style="color:#cbd5e1; margin:0px;">기회점수: <b style="color:#38bdf8;">{row['기회점수']}점</b> | 시장: <b>{row['시장']}</b></p>
                     <hr style="border-color:#334155; margin:10px 0px;">
                     <p style="color:#cbd5e1; font-size:13px; margin:2px;">현재가: <b>{format(row['현재가'], ',')}원</b></p>
                     <p style="color:#f87171; font-size:13px; margin:2px;">손절가: <b>{format(row['손절가'], ',')}원</b> ({row['손절폭(%)']}%)</p>
@@ -549,18 +640,18 @@ with tab1:
         "손절가",
         "손절폭(%)",
         "1차목표가",
-        "기관외인수급",
+        "손익비",
     ]
     st.dataframe(df_res[show_cols], use_container_width=True, hide_index=True)
 
 
 # ----------------------------------------------------
-# TAB 2: 보수적 자금 관리 계산기
+# TAB 2: 보수적 자금 관리기
 # ----------------------------------------------------
 with tab2:
   st.markdown("### 🧮 보수적 포지션 사이징 계산기")
   st.caption(
-      "손실 허용 한도와 최대 투자 비중 한도 중 **더 엄격한(작은) 조건**을"
+      "손실 허용 한도와 최대 투자 비중 한도 중 **더 엄격한 조건**을"
       " 자동으로 적용합니다."
   )
 
@@ -580,22 +671,21 @@ with tab2:
     max_weight_pct = st.slider(
         "종목당 최대 투자 비중 한도 (%)", min_value=5.0, max_value=50.0, value=20.0, step=5.0
     )
-    entry_p = st.number_input("매수 예정가 (원)", min_value=100, value=50000, step=500)
-    stop_p = st.number_input("손절가 (원)", min_value=90, value=48000, step=500)
+    entry_p = st.number_input(
+        "매수 예정가 (원)", min_value=100, value=70000, step=500
+    )
+    stop_p = st.number_input("손절가 (원)", min_value=90, value=67500, step=500)
 
   if entry_p <= stop_p:
     st.error("손절가는 매수가보다 낮아야 합니다.")
   else:
-    # 1. 리스크 기준 수량
     allowed_risk_amt = account_eq * (max_risk_pct / 100)
     risk_per_share = entry_p - stop_p
     shares_by_risk = int(allowed_risk_amt // risk_per_share)
 
-    # 2. 비중 한도 기준 수량
     max_alloc_amt = account_eq * (max_weight_pct / 100)
     shares_by_weight = int(max_alloc_amt // entry_p)
 
-    # 더 엄격한(작은) 수량 채택
     final_shares = min(shares_by_risk, shares_by_weight)
     total_invest = final_shares * entry_p
     actual_weight = round((total_invest / account_eq) * 100, 1)
@@ -623,39 +713,59 @@ with tab2:
 
 
 # ----------------------------------------------------
-# TAB 3: 독립 전략 백테스트
+# TAB 3: 정밀 전략 백테스트 검증
 # ----------------------------------------------------
 with tab3:
-  st.markdown("### 📜 전략별 독립 백테스트 검증")
+  st.markdown("### 📜 전략별 정밀 백테스트 검증")
   st.caption(
-      "삼성전자(005930.KS) 종목을 대상으로 각 전략별 과거 1년 성과(복리,"
-      " 수수료, 갭 반영)를 검증합니다."
+      "삼성전자(005930.KS) 종목을 대상으로 갭 체결 순서 및 미실현 평가손익이"
+      " 반영된 에퀴티 성과를 검증합니다."
   )
 
   strat_choice = st.selectbox(
       "백테스트할 전략 선택", ["돌파형", "눌림목형", "수급폭발형"]
   )
 
-  if st.button("📊 백테스트 실행"):
-    with st.spinner(f"{strat_choice} 전략 시뮬레이션 가동 중..."):
-      bt = run_strategy_backtest(
+  if st.button("📊 정밀 백테스트 실행"):
+    with st.spinner(f"{strat_choice} 갭 체결 시뮬레이션 가동 중..."):
+      bt = run_precise_backtest(
           "005930.KS", strategy_type=strat_choice, initial_capital=10000000
       )
       if not bt:
         st.warning("백테스트 데이터가 부족하거나 체결된 거래가 없습니다.")
       else:
-        bc1, bc2, bc3, bc4, bc5 = st.columns(5)
+        bc1, bc2, bc3, bc4 = st.columns(4)
         with bc1:
           st.metric("총 거래 횟수", f"{bt['total_trades']} 회")
-        with bc2:
           st.metric("전략 승률", f"{bt['win_rate']} %")
+        with bc2:
+          st.metric("누적 수익률", f"{bt['cum_return']} %")
+          st.metric("CAGR (연환산)", f"{bt['cagr']} %")
         with bc3:
-          st.metric("누적 수익률 (복리)", f"{bt['cum_return']} %")
-        with bc4:
           st.metric("Profit Factor", f"{bt['profit_factor']}")
-        with bc5:
           st.metric("최대 낙폭 (MDD)", f"{bt['mdd']} %")
+        with bc4:
+          st.metric(
+              "벤치마크 수익률", f"{bt['benchmark_return']} % (Buy&Hold)"
+          )
+          st.metric("평균 보유 기간", f"{bt['avg_holding_days']} 일")
 
-        st.markdown(f"**최종 자산 평가액:** {format(bt['final_capital'], ',')} 원")
+        st.markdown(
+            f"**최종 자산 평가액:** {format(bt['final_capital'], ',')} 원"
+        )
+
+        st.markdown("#### 📈 일별 자산 에퀴티 곡선")
+        fig_eq = px.line(
+            bt["equity_curve"],
+            x="date",
+            y="equity",
+            title="포트폴리오 일별 에퀴티 곡선 (미실현 평가액 반영)",
+        )
+        fig_eq.update_layout(height=300, margin=dict(l=10, r=10, t=30, b=10))
+        st.plotly_chart(fig_eq, use_container_width=True)
+
         st.markdown("#### 📜 상세 거래 내역")
-        st.dataframe(bt["history"], use_container_width=True)
+        if not bt["history"].empty:
+          st.dataframe(bt["history"], use_container_width=True)
+        else:
+          st.info("기록된 거래 내역이 없습니다.")
