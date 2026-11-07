@@ -1,15 +1,16 @@
 from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 import yfinance as yf
 
-# 1. 페이지 레이아웃 및 모바일 반응형 설정
+# 1. 페이지 레이아웃 및 디자인 설정
 st.set_page_config(
     page_title="나만의 주식 매니저", page_icon="📈", layout="wide"
 )
 
-# 커스텀 CSS로 모바일/PC 가독성 및 디자인 세련미 강화
+# 모바일/PC 반응형 커스텀 스타일
 st.markdown(
     """
     <style>
@@ -25,10 +26,11 @@ st.markdown(
         margin-bottom: 20px;
     }
     .card-box {
-        background-color: #1e293b;
-        padding: 15px;
-        border-radius: 10px;
+        background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+        padding: 18px;
+        border-radius: 12px;
         border: 1px solid #334155;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
         text-align: center;
     }
     </style>
@@ -47,7 +49,7 @@ st.markdown(
 )
 
 
-# 2. 국내 주요 주도주 데이터 분석 함수
+# 2. 주도주 수집 및 분석 함수
 @st.cache_data(ttl=3600)
 def analyze_stocks():
   WATCH_LIST = {
@@ -132,17 +134,19 @@ def analyze_stocks():
       res_df["유동성점수"] + res_df["수급폭증점수"] + res_df["모멘텀점수"]
   ).round(1)
 
-  # 종합 점수 기준 내림차순 정렬 (1위가 맨 위로 오도록 확실하게 고정)
+  # 내림차순 정렬 및 순위 추가
   res_df = res_df.sort_values(by="종합점수", ascending=False).reset_index(
       drop=True
   )
-  res_df["순위"] = res_df.index + 1  # 1위부터 순위 부여
+  res_df["순위"] = res_df.index + 1
 
   return res_df
 
 
-# 3. 메인 인터페이스 및 분석 실행 버튼
-if st.button("📊 실시간 주도주 스크리닝 시작", type="primary", use_container_width=True):
+# 3. 메인 화면 구성 및 실행
+if st.button(
+    "📊 실시간 주도주 스크리닝 시작", type="primary", use_container_width=True
+):
   with st.spinner(
       "시장 데이터를 수집하고 최적의 종목 순위를 매기는 중입니다..."
   ):
@@ -157,7 +161,7 @@ if st.button("📊 실시간 주도주 스크리닝 시작", type="primary", use
           f"✨ 분석 완료! (총 {len(df_result)}개 종목 추천 순위 산정 완료)"
       )
 
-      # --- [UI 개선 1] 상위 TOP 3 하이라이트 카드 (모바일/PC 모두 예쁘게 배치) ---
+      # --- [개선 1] TOP 3 카드 + 선정 이유 모달(Expander) ---
       st.markdown("### 🏆 오늘의 TOP 3 유망 주도주")
       top3_cols = st.columns(3)
 
@@ -170,7 +174,7 @@ if st.button("📊 실시간 주도주 스크리닝 시작", type="primary", use
                 <div class="card-box">
                     <h3 style="color: #38bdf8; margin: 0px;">🔥 {int(row['순위'])}위</h3>
                     <h2 style="color: #ffffff; margin: 5px 0px;">{row['종목명']}</h2>
-                    <p style="color: #94a3b8; font-size: 14px; margin: 0px;">종합 점수: <b style="color: #4ade80;">{row['종합점수']}점</b></p>
+                    <p style="color: #94a3b8; font-size: 14px; margin: 0px;">종합 점수: <b style="color: #4ade80; font-size: 18px;">{row['종합점수']}점</b></p>
                     <hr style="border-color: #334155; margin: 10px 0px;">
                     <p style="color: #cbd5e1; font-size: 13px; margin: 2px;">현재가: {format(row['현재가'], ',')}원</p>
                     <p style="color: {'#f87171' if row['등락률(%)'] < 0 else '#4ade80'}; font-size: 13px; margin: 2px;">등락률: {row['등락률(%)']}%</p>
@@ -179,9 +183,70 @@ if st.button("📊 실시간 주도주 스크리닝 시작", type="primary", use
                 unsafe_allow_html=True,
             )
 
+            # 클릭 시 이유를 보여주는 접이식 버튼
+            with st.expander(f"💡 {row['종목명']} 선정 이유 보기"):
+              st.write(f"**1. 유동성 수급:** {row['당일 거래대금(억)']}억 유입")
+              st.write(
+                  f"**2. 수급 폭증률:** 평소 20일 평균 대비"
+                  f" **{row['거래대금 폭증배율']}배** 폭증"
+              )
+              st.write(
+                  f"**3. 단기 모멘텀:** 최근 5일간 **{row['5일 수익률(%)']}%**"
+                  " 추세 유지"
+              )
+
+              # 종합 평가 문구 자동 생성
+              if row["거래대금 폭증배율"] >= 1.5:
+                st.info(
+                    "🔥 **알고리즘 총평:** 평소보다 거래량이 급증하며 강한"
+                    " 자금이 유입된 전형적인 주도주 형태입니다."
+                )
+              elif row["5일 수익률(%)"] > 5:
+                st.info(
+                    "📈 **알고리즘 총평:** 5일 단기 추세가 우상향하며 탄탄한"
+                    " 상승 모멘텀을 형성하고 있습니다."
+                )
+              else:
+                st.info(
+                    "🛡️ **알고리즘 총평:** 거래대금 수급이 상위권에 속해 있어"
+                    " 하방을 지지하는 힘이 강합니다."
+                )
+
       st.markdown("<br>", unsafe_allow_html=True)
 
-      # --- [UI 개선 2] 전체 추천 순위 표 (반응형 및 깔끔한 컬럼 정렬) ---
+      # --- [개선 2] Plotly 기반의 고급 세련된 차트 UI ---
+      st.markdown("### 📊 TOP 10 종목 종합 점수 비교")
+      top10_df = df_result.head(10).sort_values(by="종합점수", ascending=True)
+
+      fig = px.bar(
+          top10_df,
+          x="종합점수",
+          y="종목명",
+          orientation="h",
+          text="종합점수",
+          color="종합점수",
+          color_continuous_scale="Viridis",  # 세련된 그라데이션 색상
+      )
+
+      fig.update_layout(
+          plot_bgcolor="rgba(0,0,0,0)",
+          paper_bgcolor="rgba(0,0,0,0)",
+          font=dict(color="#ffffff"),
+          xaxis=dict(showgrid=True, gridcolor="#334155", title="종합 점수"),
+          yaxis=dict(title=""),
+          coloraxis_showscale=False,  # 범례 숨기기
+          height=380,
+          margin=dict(l=20, r=20, t=20, b=20),
+      )
+      fig.update_traces(
+          texttemplate="%{text}점",
+          textposition="outside",
+          hovertemplate="<b>%{y}</b><br>종합점수: %{x}점<extra></extra>",
+      )
+
+      st.plotly_chart(fig, use_container_width=True)
+
+      # --- 전체 추천 순위 리스트 표 ---
       st.markdown("### 📋 전체 추천 순위 리스트")
       display_df = df_result[[
           "순위",
@@ -194,15 +259,9 @@ if st.button("📊 실시간 주도주 스크리닝 시작", type="primary", use
           "종합점수",
       ]].copy()
 
-      # Streamlit 반응형 테이블 출력 (모바일 가로 스크롤 및 PC 최적화 지원)
       st.dataframe(
           display_df, use_container_width=True, hide_index=True
       )
-
-      # --- [UI 개선 3] TOP 10 점수 비교 바 차트 ---
-      st.markdown("### 📊 상위 종목 종합 점수 비교")
-      chart_data = df_result.set_index("종목명")["종합점수"].head(10)
-      st.bar_chart(chart_data)
 else:
   st.info(
       "👆 상단의 **[실시간 주도주 스크리닝 시작]** 버튼을 누르면 AI 매니저가"
